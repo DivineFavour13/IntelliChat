@@ -3,7 +3,9 @@ Database models and session setup, using SQLAlchemy against PostgreSQL
 (Neon, Supabase, or any Postgres host — set DATABASE_URL in your env).
 
 Schema:
-  conversations: one row per (channel, external_user_id) pair
+  conversations: one row per chat thread. A single browser session
+    (external_user_id) can have many conversations — this is what powers
+    the "multiple saved chats" sidebar.
   messages: every user/assistant message, linked to a conversation
 """
 
@@ -28,8 +30,11 @@ class Conversation(Base):
     __tablename__ = "conversations"
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    channel: Mapped[str] = mapped_column(String(20))  # "website" | "whatsapp" | "instagram"
+    channel: Mapped[str] = mapped_column(String(20))  # "website" (only channel for now)
     external_user_id: Mapped[str] = mapped_column(String(255), index=True)
+    # Short label for the sidebar — set from the first user message once one
+    # arrives; stays null until then (shown as "New chat" in the UI).
+    title: Mapped[str] = mapped_column(String(80), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
     )
@@ -81,20 +86,48 @@ def init_db() -> None:
     Base.metadata.create_all(bind=engine)
 
 
-def get_or_create_conversation(
+def create_conversation(session, channel: str, external_user_id: str) -> Conversation:
+    """Start a brand-new, empty conversation thread. Used for both the
+    sidebar's "New chat" button and the "clear chat" action (which is just
+    a new thread under the hood — the old one stays saved in the sidebar)."""
+    convo = Conversation(channel=channel, external_user_id=external_user_id)
+    session.add(convo)
+    session.commit()
+    session.refresh(convo)
+    return convo
+
+
+def get_or_create_first_conversation(
     session, channel: str, external_user_id: str
 ) -> Conversation:
+    """Used on first page load: if this browser session already has any
+    conversations, return the most recent one; otherwise create one."""
     convo = (
         session.query(Conversation)
         .filter_by(channel=channel, external_user_id=external_user_id)
+        .order_by(Conversation.created_at.desc())
         .first()
     )
     if convo is None:
-        convo = Conversation(channel=channel, external_user_id=external_user_id)
-        session.add(convo)
-        session.commit()
-        session.refresh(convo)
+        convo = create_conversation(session, channel, external_user_id)
     return convo
+
+
+def list_conversations(
+    session, channel: str, external_user_id: str
+) -> list[Conversation]:
+    """All conversations for this browser session, most recent first —
+    powers the sidebar list."""
+    return (
+        session.query(Conversation)
+        .filter_by(channel=channel, external_user_id=external_user_id)
+        .order_by(Conversation.created_at.desc())
+        .all()
+    )
+
+
+def get_conversation(session, conversation_id: int) -> Conversation | None:
+    return session.get(Conversation, conversation_id)
 
 
 def get_recent_messages(session, conversation_id: int, limit: int = 10) -> list[Message]:
@@ -111,4 +144,12 @@ def save_message(session, conversation_id: int, role: str, content: str) -> Mess
     msg = Message(conversation_id=conversation_id, role=role, content=content)
     session.add(msg)
     session.commit()
+
+    # First user message in a fresh conversation becomes its sidebar title.
+    if role == "user":
+        convo = session.get(Conversation, conversation_id)
+        if convo and not convo.title:
+            convo.title = content[:60] + ("…" if len(content) > 60 else "")
+            session.commit()
+
     return msg

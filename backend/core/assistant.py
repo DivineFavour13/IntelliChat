@@ -1,14 +1,14 @@
 """
 The shared "brain" of the assistant.
 
-Every channel (website /api/chat, WhatsApp webhook, Instagram webhook — added
-later) calls get_assistant_reply(). This keeps the AI logic in one place, so
-improvements here apply everywhere automatically.
+The website calls get_assistant_reply() (or stream_assistant_reply() for
+live-typing responses). Keeping the AI logic in one place means any future
+channel, or any prompt/model improvement, applies everywhere automatically.
 """
 
-from typing import TypedDict, Literal
+from typing import Iterator, TypedDict, Literal
 
-from services.openai_client import call_openai
+from services.openai_client import call_openai, stream_openai
 
 Role = Literal["user", "assistant"]
 
@@ -25,17 +25,30 @@ SYSTEM_PROMPT = (
 )
 
 
+def _build_messages(history: list[ChatMessage], new_message: str) -> list[dict]:
+    messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+    messages += [{"role": m["role"], "content": m["content"]} for m in history]
+    messages.append({"role": "user", "content": new_message})
+    return messages
+
+
 def get_assistant_reply(history: list[ChatMessage], new_message: str) -> str:
     """
     Given the recent conversation history and a new user message, return the
-    assistant's reply as plain text.
+    assistant's full reply as plain text (non-streaming).
 
     `history` should already be trimmed to the last N messages by the caller
     (see routes/chat.py) — this function doesn't do trimming itself, so it
     stays easy to test and reuse.
     """
-    messages = [{"role": "system", "content": SYSTEM_PROMPT}]
-    messages += [{"role": m["role"], "content": m["content"]} for m in history]
-    messages.append({"role": "user", "content": new_message})
+    return call_openai(_build_messages(history, new_message))
 
-    return call_openai(messages)
+
+def stream_assistant_reply(history: list[ChatMessage], new_message: str) -> Iterator[str]:
+    """
+    Same as get_assistant_reply, but yields the reply incrementally as text
+    chunks arrive from the model — used for the live-typing effect on the
+    website. Any error from the API surfaces on the *first* call, before any
+    chunk is yielded, so callers can still return a clean error response.
+    """
+    return stream_openai(_build_messages(history, new_message))

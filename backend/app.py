@@ -21,9 +21,13 @@ def create_app() -> Flask:
     app = Flask(__name__)
 
     # CORS: only allow the frontend origin(s), never "*" once deployed.
-    # Set FRONTEND_ORIGIN in your environment (e.g. https://your-app.vercel.app).
-    frontend_origin = os.environ.get("FRONTEND_ORIGIN", "http://localhost:3000")
-    CORS(app, origins=[frontend_origin])
+    # Set FRONTEND_ORIGIN in your environment (comma-separated) if needed
+    # (e.g. https://your-app.vercel.app). By default allow localhost:3000
+    # and localhost:3002 for common dev setups.
+    frontend_origins = os.environ.get("FRONTEND_ORIGIN", "http://localhost:3000,http://localhost:3002")
+    # Allow a single origin or a comma-separated list
+    origins = [o.strip() for o in frontend_origins.split(",") if o.strip()]
+    CORS(app, origins=origins)
 
     app.register_blueprint(chat_bp, url_prefix="/api")
 
